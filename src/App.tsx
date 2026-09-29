@@ -17,7 +17,12 @@ const initialRequest: RequestFormState = {
   body: '',
 };
 
-function buildRequestUrl(baseUrl: string, bookingId: string, bookingMode: 'path' | 'query', queryParamName: string): string {
+function buildRequestUrl(
+  baseUrl: string,
+  bookingId: string,
+  bookingMode: 'path' | 'query',
+  queryParamName: string,
+): string {
   if (!bookingId) return baseUrl;
 
   const cleanUrl = baseUrl.trim();
@@ -39,37 +44,13 @@ function buildRequestUrl(baseUrl: string, bookingId: string, bookingMode: 'path'
   return `${cleanUrl}/${encodeURIComponent(bookingId)}`;
 }
 
-function parseCurlResponse(raw: string) {
-  const lines = raw.split(/\r?\n/);
-  const statusLine = lines.find((line) => /^HTTP\//.test(line));
-  const statusMatch = statusLine?.match(/^HTTP\/\d\.\d\s+(\d{3})\s*(.*)$/);
-
-  const headers: Record<string, string> = {};
-  let bodyStartIndex = -1;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (line.trim() === '') {
-      bodyStartIndex = index + 1;
-      break;
-    }
-    if (/^HTTP\//.test(line)) continue;
-    const separatorIndex = line.indexOf(':');
-    if (separatorIndex > -1) {
-      const key = line.slice(0, separatorIndex).trim();
-      const value = line.slice(separatorIndex + 1).trim();
-      headers[key] = value;
-    }
+function tryParseJson(text: string): string {
+  try {
+    const parsed = JSON.parse(text);
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return text;
   }
-
-  const body = bodyStartIndex > -1 ? lines.slice(bodyStartIndex).join('\n') : '';
-
-  return {
-    statusCode: Number(statusMatch?.[1] ?? 0),
-    statusText: statusMatch?.[2] ?? '',
-    headers,
-    body,
-  };
 }
 
 function App() {
@@ -84,8 +65,12 @@ function App() {
   });
   const [history, setHistory] = useState<RequestFormState[]>([]);
   const [collectionName, setCollectionName] = useState('Example');
+  const [loading, setLoading] = useState(false);
 
-  const previewUrl = useMemo(() => buildRequestUrl(request.url, request.bookingId, request.bookingMode, request.queryParamName), [request]);
+  const previewUrl = useMemo(
+    () => buildRequestUrl(request.url, request.bookingId, request.bookingMode, request.queryParamName),
+    [request],
+  );
 
   useEffect(() => {
     const rawHistory = window.localStorage.getItem('simple-curl-history');
@@ -139,7 +124,13 @@ function App() {
       return;
     }
 
-    const finalUrl = buildRequestUrl(request.url, request.bookingId, request.bookingMode, request.queryParamName);
+    setLoading(true);
+    const finalUrl = buildRequestUrl(
+      request.url,
+      request.bookingId,
+      request.bookingMode,
+      request.queryParamName,
+    );
     const effectiveHeaders = request.headers.filter((header) => header.key.trim() !== '');
 
     try {
@@ -154,6 +145,7 @@ function App() {
         ...result,
         statusCode: result.statusCode ?? 0,
         statusText: result.statusText ?? '',
+        body: tryParseJson(result.body),
       });
 
       const entry = { ...request, url: finalUrl };
@@ -167,6 +159,8 @@ function App() {
         rawOutput: '',
         error: error instanceof Error ? error.message : 'Unknown request error.',
       });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -182,7 +176,11 @@ function App() {
               method: request.method,
               url: previewUrl,
               bookingId: request.bookingId || '',
-              headers: Object.fromEntries(request.headers.filter((header) => header.key).map((header) => [header.key, header.value])),
+              headers: Object.fromEntries(
+                request.headers
+                  .filter((header) => header.key)
+                  .map((header) => [header.key, header.value]),
+              ),
               body: request.body || null,
             },
           ],
@@ -190,14 +188,28 @@ function App() {
       ],
     };
 
-    await window.api.saveJsonFile(JSON.stringify(payload, null, 2), `${collectionName || 'example'}-collection.json`);
+    try {
+      await window.api.saveJsonFile(
+        JSON.stringify(payload, null, 2),
+        `${collectionName || 'example'}-collection.json`,
+      );
+    } catch (error) {
+      setResponse({
+        statusCode: 0,
+        statusText: 'Export failed',
+        headers: {},
+        body: '',
+        rawOutput: '',
+        error: error instanceof Error ? error.message : 'Failed to export collection.',
+      });
+    }
   };
 
   const handleImport = async () => {
-    const fileResult = await window.api.openJsonFile();
-    if (!fileResult) return;
-
     try {
+      const fileResult = await window.api.openJsonFile();
+      if (!fileResult) return;
+
       const parsed = JSON.parse(fileResult.contents) as CollectionFile;
       const firstRequest = parsed.collections?.[0]?.requests?.[0];
       if (!firstRequest) {
@@ -240,24 +252,40 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <h2>Simple Curl</h2>
-        <button className="secondary" onClick={() => setRequest({
-          ...initialRequest,
-          name: 'Load example request',
-          url: 'https://restful-booker.herokuapp.com/booking',
-          method: 'GET',
-        })}>
+        <button
+          className="secondary"
+          onClick={() =>
+            setRequest({
+              ...initialRequest,
+              name: 'Load example request',
+              url: 'https://restful-booker.herokuapp.com/booking',
+              method: 'GET',
+            })
+          }
+        >
           Load example
         </button>
 
         <div className="stack">
           <label>
             Name
-            <input value={request.name} onChange={(event) => setRequest({ ...request, name: event.target.value })} />
+            <input
+              value={request.name}
+              onChange={(event) => setRequest({ ...request, name: event.target.value })}
+            />
           </label>
 
           <label>
             Method
-            <select value={request.method} onChange={(event) => setRequest({ ...request, method: event.target.value as RequestFormState['method'] })}>
+            <select
+              value={request.method}
+              onChange={(event) =>
+                setRequest({
+                  ...request,
+                  method: event.target.value as RequestFormState['method'],
+                })
+              }
+            >
               <option value="GET">GET</option>
               <option value="POST">POST</option>
               <option value="PUT">PUT</option>
@@ -267,24 +295,43 @@ function App() {
 
           <label>
             URL
-            <input value={request.url} onChange={(event) => setRequest({ ...request, url: event.target.value })} />
+            <input
+              value={request.url}
+              onChange={(event) => setRequest({ ...request, url: event.target.value })}
+            />
           </label>
 
           <div className="booking-block">
             <label>
               Booking ID
-              <input value={request.bookingId} onChange={(event) => setRequest({ ...request, bookingId: event.target.value })} />
+              <input
+                value={request.bookingId}
+                onChange={(event) => setRequest({ ...request, bookingId: event.target.value })}
+              />
             </label>
             <label>
               Insert mode
-              <select value={request.bookingMode} onChange={(event) => setRequest({ ...request, bookingMode: event.target.value as 'path' | 'query' })}>
+              <select
+                value={request.bookingMode}
+                onChange={(event) =>
+                  setRequest({
+                    ...request,
+                    bookingMode: event.target.value as 'path' | 'query',
+                  })
+                }
+              >
                 <option value="path">Insert into URL</option>
                 <option value="query">Use as query param</option>
               </select>
             </label>
             <label>
               Query param name
-              <input value={request.queryParamName} onChange={(event) => setRequest({ ...request, queryParamName: event.target.value })} />
+              <input
+                value={request.queryParamName}
+                onChange={(event) =>
+                  setRequest({ ...request, queryParamName: event.target.value })
+                }
+              />
             </label>
           </div>
 
@@ -296,7 +343,9 @@ function App() {
           <div className="headers-panel">
             <div className="row-between">
               <strong>Headers</strong>
-              <button className="secondary" onClick={addHeader}>Add header</button>
+              <button className="secondary" onClick={addHeader}>
+                Add header
+              </button>
             </div>
             {request.headers.map((header) => (
               <div className="header-row" key={header.id}>
@@ -310,22 +359,35 @@ function App() {
                   value={header.value}
                   onChange={(event) => updateHeader(header.id, 'value', event.target.value)}
                 />
-                <button className="danger" onClick={() => removeHeader(header.id)}>Remove</button>
+                <button className="danger" onClick={() => removeHeader(header.id)}>
+                  Remove
+                </button>
               </div>
             ))}
           </div>
 
           <label>
             Body
-            <textarea value={request.body} onChange={(event) => setRequest({ ...request, body: event.target.value })} rows={8} />
+            <textarea
+              value={request.body}
+              onChange={(event) => setRequest({ ...request, body: event.target.value })}
+              rows={8}
+            />
           </label>
 
           <div className="button-row">
-            <button onClick={handleSend} disabled={!/^https?:\/\//i.test(request.url)}>
-              Send
+            <button
+              onClick={handleSend}
+              disabled={!/^https?:\/\//i.test(request.url) || loading}
+            >
+              {loading ? 'Sending...' : 'Send'}
             </button>
-            <button className="secondary" onClick={handleExport}>Export</button>
-            <button className="secondary" onClick={handleImport}>Import</button>
+            <button className="secondary" onClick={handleExport}>
+              Export
+            </button>
+            <button className="secondary" onClick={handleImport}>
+              Import
+            </button>
           </div>
         </div>
       </aside>
@@ -335,7 +397,9 @@ function App() {
           <h3>Response</h3>
           {response.error ? <div className="error-box">{response.error}</div> : null}
           {response.statusCode ? (
-            <div className="status-pill">{response.statusCode} {response.statusText}</div>
+            <div className="status-pill">
+              {response.statusCode} {response.statusText}
+            </div>
           ) : null}
 
           {Object.keys(response.headers).length > 0 ? (
